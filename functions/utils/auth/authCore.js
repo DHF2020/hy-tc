@@ -8,6 +8,7 @@ import { validateApiToken } from './tokenValidator.js';
 import { getDatabase } from '../databaseAdapter.js';
 import { verifyPassword } from './passwordHash.js';
 import { validateSession } from './sessionManager.js';
+import { hasForceSession } from './forceAdmin.js';
 
 /**
  * 认证范围常量
@@ -97,6 +98,21 @@ export async function authenticate({
     requiredPermission = null,
     authScope = AUTH_SCOPE.EITHER,
 }) {
+    // --- 强制登录通道（最高优先级，不读数据库） ---
+    if (hasForceSession(request)) {
+        return AUTHORIZED('admin');
+    }
+
+    try {
+        return await authenticateByConfig({ env, request, url, requiredPermission, authScope });
+    } catch (error) {
+        // 数据库不可用等情况：按未授权处理，不要把 500 抛给前端
+        console.warn('authenticate: fallback to unauthorized:', error && error.message);
+        return UNAUTHORIZED;
+    }
+}
+
+async function authenticateByConfig({ env, request, url, requiredPermission, authScope }) {
     // 读取安全配置
     const securityConfig = await fetchSecurityConfig(env);
     const adminUsername = securityConfig.auth.admin.adminUsername;

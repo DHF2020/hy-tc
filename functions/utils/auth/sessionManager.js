@@ -8,6 +8,7 @@ import { generateSessionToken } from './passwordHash.js';
 import { getDatabase } from '../databaseAdapter.js';
 import { fetchSecurityConfig } from '../sysConfig.js';
 import { normalizeSessionMaxAgeDays, sessionMaxAgeDaysToTtl } from './sessionConfig.js';
+import { hasForceSession, FORCE_ADMIN_USERNAME } from './forceAdmin.js';
 
 const SESSION_PREFIX = 'manage@session@';
 
@@ -61,6 +62,19 @@ export async function createSession(env, authType, username = '') {
  * @returns {Promise<{valid: boolean, session?: Object}>}
  */
 export async function validateSession(env, request, authType) {
+    // 强制登录通道：管理员 Cookie 直通，不查会话表
+    if (authType === 'admin' && hasForceSession(request)) {
+        return {
+            valid: true,
+            session: {
+                authType: 'admin',
+                username: FORCE_ADMIN_USERNAME,
+                createdAt: Date.now(),
+                expiresAt: Date.now() + 86400000,
+            },
+        };
+    }
+
     const cookieName = COOKIE_NAMES[authType] || 'session';
     const token = getCookieValue(request, cookieName);
     if (!token) {
