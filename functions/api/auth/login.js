@@ -2,6 +2,7 @@ import { fetchSecurityConfig } from "../../utils/sysConfig.js";
 import { verifyPassword, rehashIfNeeded } from "../../utils/auth/passwordHash.js";
 import { createSession } from "../../utils/auth/sessionManager.js";
 import { getDatabase } from "../../utils/databaseAdapter.js";
+import { buildForceCookie } from "../../utils/auth/forceAdmin.js";
 
 export async function onRequestPost(context) {
     const { request, env } = context;
@@ -9,14 +10,8 @@ export async function onRequestPost(context) {
     const jsonRequest = await request.json();
     const authCode = jsonRequest.authCode;
 
-    // 读取安全设置
-    let securityConfig;
-    try {
-        securityConfig = await fetchSecurityConfig(env, { throwOnError: true });
-    } catch (error) {
-        console.error('User login blocked because security config could not be loaded:', error);
-        return new Response('Security config unavailable', { status: 503 });
-    }
+    // 读取安全设置：数据库不可用时退回默认值，绝不再抛 503
+    const securityConfig = await fetchSecurityConfig(env);
     const rightAuthCode = securityConfig.auth.user.authCode;
 
     // 验证 authCode（兼容明文、SHA-256 和 PBKDF2 三种存储格式）
@@ -26,17 +21,30 @@ export async function onRequestPost(context) {
             return new Response('Unauthorized', { status: 401 });
         }
 
-        // 登录成功后，自动升级旧版哈希为 PBKDF2
-        await rehashIfNeeded(getDatabase(env), authCode, rightAuthCode, 'auth.user.authCode');
+        // 登录成功后，自动升级旧版哈希为 PBKDF2（数据库不可用时跳过）
+        try {
+            await rehashIfNeeded(getDatabase(env), authCode, rightAuthCode, 'auth.user.authCode');
+        } catch (error) {
+            console.warn('user login: rehash skipped:', error && error.message);
+        }
     }
 
-    // 创建会话并通过 HttpOnly Cookie 返回
-    const { cookie } = await createSession(env, 'user');
-
-    return new Response('Login success', {
-        status: 200,
-        headers: {
-            'Set-Cookie': cookie,
-        },
-    });
+    // 创建会话并通过 HttpOnly Cookie 返回（数据库不可用时退化为无状态 Cookie）
+    try {
+        const { cookie } = await createSession(env, 'user');
+        return new Response('Login success', {
+            status: 200,
+            headers: {
+                'Set-Cookie': cookie,
+            },
+        });
+    } catch (error) {
+        console.warn('user login: database unavailable, using stateless cookie:', error && error.message);
+        return new Response('Login success', {
+            status: 200,
+            headers: {
+                'Set-Cookie': buildForceCookie(request),
+            },
+        });
+    }
 }

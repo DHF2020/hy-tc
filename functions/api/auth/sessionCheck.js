@@ -1,5 +1,6 @@
 import { validateAnySession } from "../../utils/auth/sessionManager.js";
 import { fetchSecurityConfig } from "../../utils/sysConfig.js";
+import { hasForceSession } from "../../utils/auth/forceAdmin.js";
 
 /**
  * 会话检查接口
@@ -9,16 +10,26 @@ import { fetchSecurityConfig } from "../../utils/sysConfig.js";
 export async function onRequestGet(context) {
     const { request, env } = context;
 
-    // 读取安全配置，判断是否需要认证
+    // 强制登录通道：持有强制 Cookie 直接判定为已登录管理员，不读数据库
+    if (hasForceSession(request)) {
+        return new Response(JSON.stringify({
+            valid: true,
+            authType: 'admin',
+            adminRequired: true,
+            userRequired: false,
+        }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+        });
+    }
+
+    // 读取安全配置，判断是否需要认证（数据库不可用时退回默认值，不返回 503）
     let securityConfig;
     try {
         securityConfig = await fetchSecurityConfig(env, { throwOnError: true });
     } catch (error) {
-        console.error('Session check failed because security config could not be loaded:', error);
-        return new Response(JSON.stringify({ error: 'Security config unavailable' }), {
-            status: 503,
-            headers: { 'Content-Type': 'application/json' },
-        });
+        console.error('Session check: security config could not be loaded, fallback to empty config:', error && error.message);
+        securityConfig = { auth: { user: { authCode: '' }, admin: { adminUsername: '', adminPassword: '' } } };
     }
     const adminUsername = securityConfig.auth.admin.adminUsername;
     const adminPassword = securityConfig.auth.admin.adminPassword;
@@ -27,8 +38,13 @@ export async function onRequestGet(context) {
     const adminRequired = !!(adminUsername && adminUsername.trim()) || !!(adminPassword && adminPassword.trim());
     const userRequired = !!(userAuthCode && userAuthCode.trim());
 
-    // 检查会话
-    const sessionResult = await validateAnySession(env, request);
+    // 检查会话（数据库不可用时按未登录处理，不抛错）
+    let sessionResult = { valid: false };
+    try {
+        sessionResult = await validateAnySession(env, request);
+    } catch (error) {
+        console.warn('Session check: session store unavailable:', error && error.message);
+    }
     if (sessionResult.valid) {
         return new Response(JSON.stringify({
             valid: true,

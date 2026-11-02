@@ -1,4 +1,5 @@
 import { destroySession } from "../../utils/auth/sessionManager.js";
+import { clearForceCookie } from "../../utils/auth/forceAdmin.js";
 
 export async function onRequestPost(context) {
     const { request, env } = context;
@@ -12,14 +13,22 @@ export async function onRequestPost(context) {
         // 没有请求体，清除所有
     }
 
-    const result = await destroySession(env, request, authType);
-
-    // result 可能是单个字符串或数组
     const headers = new Headers();
-    if (Array.isArray(result)) {
-        result.forEach(cookie => headers.append('Set-Cookie', cookie));
-    } else {
-        headers.set('Set-Cookie', result);
+
+    // 清除强制登录 Cookie（数据库不可用时也能正常登出）
+    headers.append('Set-Cookie', clearForceCookie(request));
+
+    try {
+        const result = await destroySession(env, request, authType);
+
+        // result 可能是单个字符串或数组
+        if (Array.isArray(result)) {
+            result.forEach(cookie => headers.append('Set-Cookie', cookie));
+        } else {
+            headers.append('Set-Cookie', result);
+        }
+    } catch (error) {
+        console.warn('logout: session store unavailable:', error && error.message);
     }
 
     return new Response('Logged out', {
